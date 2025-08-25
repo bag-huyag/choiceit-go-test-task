@@ -1,0 +1,75 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: swaps
+      POSTGRES_PASSWORD: swaps
+      POSTGRES_DB: swaps
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U swaps"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: bitnami/kafka:3.7
+    environment:
+      - KAFKA_ENABLE_KRAFT=yes
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=1
+    ports:
+      - "29092:9092"
+    healthcheck:
+      test: ["CMD", "/opt/bitnami/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  migrator:
+    build:
+      context: .
+      dockerfile: ./deploy/migrator.Dockerfile
+    environment:
+      DB_DSN: postgresql://swaps:swaps@postgres:5432/swaps?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  ingest:
+    build:
+      context: .
+      dockerfile: ./deploy/ingest.Dockerfile
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: swaps.v1
+      DB_DSN: postgresql://swaps:swaps@postgres:5432/swaps?sslmode=disable
+      GRACE_SECONDS: "180"
+    depends_on:
+      - migrator
+      - kafka
+
+  api:
+    build:
+      context: .
+      dockerfile: ./deploy/api.Dockerfile
+    environment:
+      DB_DSN: postgresql://swaps:swaps@postgres:5432/swaps?sslmode=disable
+      HTTP_ADDR: ":8080"
+    depends_on:
+      - migrator
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
